@@ -1,0 +1,81 @@
+#!/usr/bin/python3
+
+# Original script by Muhammad Ahmad Bashir (ahmad@ccs.neu.edu)
+# Modified by Christo Wilson (cbw@ccs.neu.edu)
+
+import os, sys, argparse
+import urllib3, requests
+from bs4 import BeautifulSoup as bs
+
+SPARK_MASTER_SCHEME = 'http'
+SPARK_MASTER_PORT   = 18081
+CONF_FILE_FRAGMENT  = '../conf/spark-defaults.conf'
+EXCLUSIONS          = ['URL:', 'REST URL:']
+APP_COLUMNS         = 8
+APP_FINISHED        = 'FINISHED'
+
+parser = argparse.ArgumentParser(description='Get the status of a Spark cluster, such as living nodes, CPU usage, and current and historical applications.')
+parser.add_argument('-c', '--conf', nargs='?', default=None,
+                    help='The full path to the Spark configuration file. The hostname for the Spark Master will be read from this file, unless the URL is provided on the command line.')
+parser.add_argument('-u', '--url', nargs='?', default=None,
+                    help='The full URL for the Spark Master. If not specified, the URL will be determined from the Spark configuration file.')
+parser.add_argument('-a', '--all', action='store_true',
+                    help='Display all application attributes, including ID.')
+parser.add_argument('-f', '--finished', action='store_true',
+                    help='Display finished applications.')
+args = parser.parse_args()
+
+def get_conf_file_path():
+    return os.path.abspath(os.path.join(os.path.split(os.path.abspath(__file__))[0],
+                                        CONF_FILE_FRAGMENT))
+
+def get_spark_master(conf_file_path):
+    with open(conf_file_path) as cf:
+        for line in cf:
+            line = line.strip()
+            if len(line) == 0 or line[0] == '#': continue
+            if line.index('spark.master') == 0:
+                return line.split()[1]
+
+def get_hostname(url):
+    return urllib3.util.url.parse_url(url).host
+
+def get_spark_master_url(host):
+    return SPARK_MASTER_SCHEME + '://' + host + ':' + str(SPARK_MASTER_PORT)
+
+def clean_whitespace(string):
+    return ' '. join(string.split())
+
+def print_main_info(ul):
+    print('# Cluster Status')
+    for li in ul:
+        title = li.strong.text
+        if title not in EXCLUSIONS:
+            print('{:14} {}'.format(title, clean_whitespace(li.contents[1])))
+
+def print_applications(tables):
+    print('# Applications')
+    for table in tables:
+        for row in table.findAll('tr'):
+            columns = [data.text.strip() for data in row.findAll('td')]
+            if len(columns) < APP_COLUMNS: continue
+            if columns[6] == APP_FINISHED and not args.finished: continue
+            if args.all:
+                print('{0[0]} {0[1]:15} {0[2]:>3} {0[3]} {0[4]} {0[5]:10} {0[6]:8} {0[7]}'.format(columns))
+            else:
+                print('{0[1]:30} {0[4]} {0[5]:10} {0[6]:8} {0[7]}'.format(columns))
+                
+def print_status(url):
+    soup = bs(requests.get(url).text, "lxml")
+    spans = soup.select('.span12')
+    print_main_info(spans[1].select('li'))
+
+    print()
+    sections = soup.findAll('tbody')
+    print_applications(sections)
+    
+conf_file_path = args.conf if args.conf else get_conf_file_path()
+sm_url = arg.url if args.url else \
+         get_spark_master_url(get_hostname(get_spark_master(conf_file_path)))
+
+print_status(sm_url)
