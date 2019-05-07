@@ -3,9 +3,8 @@
 # Original script by Muhammad Ahmad Bashir (ahmad@ccs.neu.edu)
 # Modified by Christo Wilson (cbw@ccs.neu.edu)
 
-import os, sys, argparse
+import os, sys, argparse, json
 import urllib3, requests
-from bs4 import BeautifulSoup as bs
 
 SPARK_MASTER_SCHEME = 'http'
 SPARK_MASTER_PORT   = 18081
@@ -23,6 +22,8 @@ parser.add_argument('-a', '--all', action='store_true',
                     help='Display all application attributes, including ID.')
 parser.add_argument('-f', '--finished', action='store_true',
                     help='Display finished applications.')
+parser.add_argument('-w', '--workers', action='store_true',
+                    help='Display information about the workers.')
 args = parser.parse_args()
 
 def get_conf_file_path():
@@ -41,39 +42,85 @@ def get_hostname(url):
     return urllib3.util.url.parse_url(url).host
 
 def get_spark_master_url(host):
-    return SPARK_MASTER_SCHEME + '://' + host + ':' + str(SPARK_MASTER_PORT)
+    return SPARK_MASTER_SCHEME + '://' + host + ':' + str(SPARK_MASTER_PORT) + '/json/'
 
-def clean_whitespace(string):
-    return ' '. join(string.split())
+#suffixes = ('B', 'KB', 'MB', 'GB', 'TB', 'PB')
+suffixes = ('MB', 'GB', 'TB', 'PB')
+def humansize(nbytes):
+    i = 0
+    while nbytes >= 1024 and i < len(suffixes)-1:
+        nbytes /= 1024.0
+        i += 1
+    f = ('{:.2f}'.format(nbytes)).rstrip('0').rstrip('.')
+    return '{} {}'.format(f, suffixes[i])
 
-def print_main_info(ul):
-    print('# Cluster Status')
-    for li in ul:
-        title = li.strong.text
-        if title not in EXCLUSIONS:
-            print('{:14} {}'.format(title, clean_whitespace(li.contents[1])))
+buckets = (
+    (1000, 'ms'),
+    (60, 's'),
+    (60, 'm'),
+    (24, 'h'),
+)
+def humantime(delta):
+    for lim, pfx in buckets:
+        if delta < lim:
+            return '{:.1f} {}'.format(delta, pfx)
+        delta /= lim
+    return '{:.1f} d'.format(delta)
 
-def print_applications(tables):
-    print('# Applications')
-    for table in tables:
-        for row in table.findAll('tr'):
-            columns = [data.text.strip() for data in row.findAll('td')]
-            if len(columns) < APP_COLUMNS: continue
-            if columns[6] == APP_FINISHED and not args.finished: continue
-            if args.all:
-                print('{0[0]} {0[1]:15} {0[2]:>3} {0[3]} {0[4]} {0[5]:10} {0[6]:8} {0[7]}'.format(columns))
-            else:
-                print('{0[1]:30} {0[4]} {0[5]:10} {0[6]:8} {0[7]}'.format(columns))
-                
+null_func = lambda x: x
+fields = (
+    ('Status', 'status', null_func),
+    ('Alive Workers', 'aliveworkers', null_func),
+    ('Cores', 'cores', null_func),
+    ('Cores Used', 'coresused', null_func),
+    ('Memory', 'memory', humansize),
+    ('Memory Used', 'memoryused', humansize),
+    ('Active Apps', 'activeapps', len),
+    ('Completed Apps', 'completedapps', len)
+)
+def print_main_info(data):
+    for hdr, field, xform in fields:
+        print('{:14} : {:>7}'.format(hdr, xform(data[field])))
+
+app_attributes = ("id", "starttime", "name", "cores", "user", "memoryperslave", "submitdate", "state", "duration")
+def print_applications(applist):        
+    for app in applist:
+        app['duration'] = humantime(app['duration'])
+        if args.all:
+            app['name'] = app['name'][:15]
+            app['memoryperslave'] = humansize(app['memoryperslave'])
+            print('{0[id]}  {0[name]:15}  {0[cores]:>3}  {0[memoryperslave]}  {0[submitdate]}  {0[user]:10}  {0[state]:8}  {0[duration]}'.format(app))
+        else:
+            app['name'] = app['name'][:40]
+            print('{0[name]:40}  {0[submitdate]}  {0[user]:10}  {0[duration]}'.format(app))
+
+worker_attributes = (
+    "id", "host", "port", "webuiaddress", "cores", "coresused", "coresfree", "memory", "memoryused", "memoryfree", "state", "lastheartbeat"
+)
+def print_workers(workers):
+    for wkr in workers:
+        wkr['memory'] = humansize(wkr['memory'])
+        wkr['memoryused'] = humansize(wkr['memoryused'])
+        hn = '{0[host]}:{0[port]}'.format(wkr)
+        print('{0[id]:54}  {1:32}  {0[state]:8}  {0[cores]}  {0[coresused]}  {0[memory]}  {0[memoryused]}'.format(wkr, hn))
+
 def print_status(url):
-    soup = bs(requests.get(url).text, "lxml")
-    spans = soup.select('.span12')
-    print_main_info(spans[1].select('li'))
+    data = json.loads(requests.get(url).text)
 
-    print()
-    sections = soup.findAll('tbody')
-    print_applications(sections)
-    
+    print('# Cluster Status')
+    print_main_info(data)
+
+    print('\n# Active Applications')
+    print_applications(data['activeapps'])
+
+    if args.finished:
+        print('\n# Completed Applications')
+        print_applications(reversed(data['completedapps']))
+
+    if args.workers:
+        print('\n# Workers')
+        print_workers(sorted(data['workers'], key=lambda wkr: wkr['host']))
+        
 conf_file_path = args.conf if args.conf else get_conf_file_path()
 sm_url = arg.url if args.url else \
          get_spark_master_url(get_hostname(get_spark_master(conf_file_path)))
