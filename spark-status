@@ -84,7 +84,7 @@ def print_main_info(data):
 
 app_attributes = ("id", "starttime", "name", "cores", "user", "memoryperslave", "submitdate", "state", "duration")
 def print_applications(applist):        
-    for app in applist:
+    for app in sorted(applist, key=lambda app: app['duration']):
         app['duration'] = humantime(app['duration'])
         if args.all:
             app['name'] = app['name'][:15]
